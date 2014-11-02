@@ -13,6 +13,7 @@ import hudson.model.Run;
 import hudson.remoting.VirtualChannel;
 import hudson.tasks.BuildWrapper;
 import hudson.tasks.BuildWrapperDescriptor;
+import hudson.util.ArgumentListBuilder;
 import jenkins.model.Jenkins;
 import org.kohsuke.stapler.DataBoundConstructor;
 
@@ -39,7 +40,8 @@ public class DockerBuildWrapper extends BuildWrapper {
     }
 
     @Override
-    public Environment setUp(AbstractBuild build, final Launcher launcher, BuildListener listener) throws IOException, InterruptedException {
+    public Environment setUp(AbstractBuild build, final Launcher launcher, BuildListener listener)
+            throws IOException, InterruptedException {
 
         return new Environment() {
             @Override
@@ -82,55 +84,30 @@ public class DockerBuildWrapper extends BuildWrapper {
 
                 if (runInContainer.container == null) {
                     try {
-                        String tmp = build.getWorkspace().act(GetTmpdir);
-
-                        List<String> cmds = new ArrayList<String>();
-                        cmds.add("docker");
-                        cmds.add("run");
-                        cmds.add("-d");
-                        // mount workspace under same path in Docker container
-                        cmds.add("-v");
-                        cmds.add(build.getWorkspace().getRemote() + ":/var/workspace:rw");
-                        // mount tmpdir so we can access temporary file created to run shell build steps (and few others)
-                        cmds.add("-v");
-                        cmds.add(tmp + ":" + tmp + ":rw");
-
-                        EnvVars environment = build.getEnvironment(listener);
-                        for (Map.Entry<String, String> e : environment.entrySet()) {
-                            cmds.add("-e");
-                            cmds.add(e.getKey()+"=\""+e.getValue()+"\"");
-                        }
-
-                        cmds.add(runInContainer.image);
-                        cmds.add("sleep"); cmds.add("100000"); // find some infinite command to run
-                        ByteArrayOutputStream bos = new ByteArrayOutputStream();
-                        int s = launcher.launch().cmds(cmds).stdout(bos).join();
-                        if (s != 0) {
-                            throw new IOException("failed to run container");
-                        }
-                        runInContainer.container = bos.toString().trim();
+                        runInContainer.container = docker.runDetached(
+                                runInContainer.image, build.getWorkspace(), build.getEnvironment(listener));
                     } catch (InterruptedException e) {
                         throw new RuntimeException("Interrupted");
                     }
                 }
 
-                List<String> cmds = new ArrayList<String>();
-                cmds.add("docker");
-                cmds.add("exec");
-                cmds.add("-t");
-                cmds.add(runInContainer.container);
-                cmds.addAll(starter.cmds());
-                starter.cmds(cmds);
+                ArgumentListBuilder cmdBuilder = new ArgumentListBuilder();
+                cmdBuilder.addMasked("docker");
+                cmdBuilder.addMasked("exec");
+                cmdBuilder.addMasked("-t");
+                cmdBuilder.addMasked(runInContainer.container);
+                List<String> originalCmds = starter.cmds();
+                boolean[] originalMask = starter.masks();
+                for (int i = 0; i < originalCmds.size(); i++) {
+                    boolean masked = originalMask == null ? false : i < originalMask.length ? originalMask[i] : false;
+                    cmdBuilder.add(originalCmds.get(i), masked);
+                }
+
+                starter.cmds(cmdBuilder);
                 return super.launch(starter);
             }
         };
     }
-
-    private static FilePath.FileCallable<String> GetTmpdir = new FilePath.FileCallable<String>() {
-        public String invoke(File f, VirtualChannel channel) throws IOException, InterruptedException {
-            return System.getProperty("java.io.tmpdir");
-        }
-    };
 
     @Extension
     public static class DescriptorImpl extends BuildWrapperDescriptor {
