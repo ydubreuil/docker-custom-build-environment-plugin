@@ -87,7 +87,7 @@ public class Docker {
                 .stdout(out).stderr(err).join();
     }
 
-    public String runDetached(String image, FilePath workspace, EnvVars environment) throws IOException, InterruptedException {
+    public String runDetached(String image, FilePath workspace, EnvVars environment, String uid, String gid) throws IOException, InterruptedException {
         String tmp;
         try {
             tmp = workspace.act(GetTmpdir);
@@ -99,7 +99,7 @@ public class Docker {
         cmdBuilder.add("docker", "run");
 
         // same as running user
-        cmdBuilder.add("-u", runId("-u") + ":" + runId("-g"));
+        cmdBuilder.add("-u", uid + ":" + gid);
 
         // allocate a tty to block 'cat' and detach
         cmdBuilder.add("-td");

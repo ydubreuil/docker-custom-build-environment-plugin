@@ -84,8 +84,11 @@ public class DockerBuildWrapper extends BuildWrapper {
 
                 if (runInContainer.container == null) {
                     try {
+                        String uid = docker.runId("-u");
+                        String gid = docker.runId("-g");
+
                         runInContainer.container = docker.runDetached(
-                                runInContainer.image, build.getWorkspace(), build.getEnvironment(listener));
+                                runInContainer.image, build.getWorkspace(), build.getEnvironment(listener), uid, gid);
                     } catch (InterruptedException e) {
                         throw new RuntimeException("Interrupted");
                     }
