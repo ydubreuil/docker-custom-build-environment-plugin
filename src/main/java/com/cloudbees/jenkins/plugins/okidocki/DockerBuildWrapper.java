@@ -23,8 +23,8 @@ import java.util.List;
 
 /**
  * Decorate Launcher so that every command executed by a build step is actually ran inside docker container.
- * TODO run docker container during setup, then use docker-enter to attach command to existing container
  * @author <a href="mailto:nicolas.deloof@gmail.com">Nicolas De Loof</a>
+ * @author <a href="mailto:yoann.dubreuil@gmail.com">Yoann Dubreuil</a>
  */
 public class DockerBuildWrapper extends BuildWrapper {
 
@@ -36,70 +36,62 @@ public class DockerBuildWrapper extends BuildWrapper {
     }
 
     @Override
-    public Environment setUp(AbstractBuild build, Launcher launcher, BuildListener listener) throws IOException, InterruptedException {
-        return new Environment() { };
-    }
+    public Environment setUp(AbstractBuild build, Launcher launcher, BuildListener listener)
+            throws IOException, InterruptedException {
 
+        final Docker docker = new Docker(launcher, listener);
+        listener.getLogger().println("[docker] prepare Docker image to host the build environment");
+        String image;
+        try {
+            image = selector.prepareDockerImage(docker, build, listener);
+            build.addAction(new DockerBadge(image));
+        } catch (InterruptedException e) {
+            throw new RuntimeException("Interrupted");
+        }
 
-    @Override
-    public Launcher decorateLauncher(final AbstractBuild build, final Launcher launcher, final BuildListener listener) throws IOException, InterruptedException, Run.RunnerAbortedException {
-        final RunInContainer runInContainer = new RunInContainer();
-        build.addAction(runInContainer);
+        listener.getLogger().println("[docker] start Docker container");
+        String containerId = docker.runDetached(image, build.getWorkspace());
+        final DockerEnvironment dockerEnvironment = new DockerEnvironment(containerId);
+        build.addAction(dockerEnvironment);
 
-        return new Launcher.DecoratedLauncher(launcher) {
+        return new Environment() {
             @Override
-            public Proc launch(ProcStarter starter) throws IOException {
+            public boolean tearDown(AbstractBuild build, BuildListener listener) throws IOException, InterruptedException {
+                listener.getLogger().println("[docker] remove Docker container");
 
-                if (!runInContainer.enabled()) return super.launch(starter);
+                dockerEnvironment.setRunInContainer(false);
+                docker.stop(dockerEnvironment.getContainerId());
 
-                // TODO only run the container first time, then ns-enter for next commands to execute.
-
-                Docker docker = new Docker(launcher, listener);
-                if (runInContainer.image == null) {
-                    listener.getLogger().println("Prepare Docker image to host the build environment");
-                    try {
-                        runInContainer.image = selector.prepareDockerImage(docker, build, listener);
-                        build.addAction(new DockerBadge(runInContainer.image));
-                    } catch (InterruptedException e) {
-                        throw new RuntimeException("Interrupted");
-                    }
-                }
-
-                String tmp;
-                try {
-                    tmp = build.getWorkspace().act(GetTmpdir);
-                } catch (InterruptedException e) {
-                    throw new RuntimeException("Interrupted");
-                }
-
-                // TODO start the container with a long running command, then use docker-enter
-                // would be great to use docker exec as described on https://github.com/docker/docker/issues/1437
-
-                List<String> cmds = new ArrayList<String>();
-                cmds.add("docker");
-                cmds.add("run");
-                cmds.add("--rm");
-                cmds.add("-t");
-                // mount workspace under same path in Docker container
-                cmds.add("-v");
-                cmds.add(build.getWorkspace().getRemote() + ":/var/workspace:rw");
-                // mount tmpdir so we can access temporary file created to run shell build steps (and few others)
-                cmds.add("-v");
-                cmds.add(tmp + ":" + tmp + ":rw");
-                cmds.add(runInContainer.image);
-                cmds.addAll(starter.cmds());
-                starter.cmds(cmds);
-                return super.launch(starter);
+                return true;
             }
         };
     }
 
-    private static FilePath.FileCallable<String> GetTmpdir = new FilePath.FileCallable<String>() {
-        @Override
-        public String invoke(File f, VirtualChannel channel) throws IOException, InterruptedException {
-            return System.getProperty("java.io.tmpdir");
-        }
-    };
+    @Override
+    public Launcher decorateLauncher(final AbstractBuild build, final Launcher launcher, final BuildListener listener) throws IOException, InterruptedException, Run.RunnerAbortedException {
+        return new Launcher.DecoratedLauncher(launcher) {
+            @Override
+            public Proc launch(ProcStarter starter) throws IOException {
+                DockerEnvironment dockerEnvironment = build.getAction(DockerEnvironment.class);
+                if (dockerEnvironment == null || !dockerEnvironment.isRunInContainer()) {
+                    return super.launch(starter);
+                } else {
+                    List<String> cmds = new ArrayList<String>();
+                    //cmds.add("gdbserver");
+                    //cmds.add("localhost:8888");
+                    cmds.add("docker");
+                    cmds.add("exec");
+                    cmds.add("-t");
+                    cmds.add(dockerEnvironment.getContainerId());
+                    cmds.addAll(starter.cmds());
+                    starter.cmds(cmds);
+                    // FIXME: copy origin masks array
+                    starter.masks(new boolean[cmds.size()]);
+                    return super.launch(starter);
+                }
+            }
+        };
+    }
 
     @Extension
     public static class DescriptorImpl extends BuildWrapperDescriptor {

@@ -4,6 +4,7 @@ import hudson.FilePath;
 import hudson.Launcher;
 import hudson.Proc;
 import hudson.model.TaskListener;
+import hudson.remoting.VirtualChannel;
 import hudson.util.ArgumentListBuilder;
 import org.apache.commons.io.FileUtils;
 
@@ -13,6 +14,8 @@ import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * @author <a href="mailto:nicolas.deloof@gmail.com">Nicolas De Loof</a>
@@ -81,4 +84,36 @@ public class Docker {
                 .cmds("docker", "rm", container)
                 .stdout(out).stderr(err).join();
     }
+
+    public String runDetached(String image, FilePath workspace) throws IOException, InterruptedException {
+        String tmp;
+        try {
+            tmp = workspace.act(GetTmpdir);
+        } catch (InterruptedException e) {
+            throw new RuntimeException("Interrupted");
+        }
+
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        ByteArrayOutputStream err = new ByteArrayOutputStream();
+        int status = launcher.launch()
+                .cmds("docker", "run",
+                        //"-u", "$(id -u):$(id -g)", // give same credentials as running user
+                        "-td", // allocate a tty to block 'cat' and detach
+                        "-v", workspace.getRemote()+":/var/workspace:rw",
+                        "-v", tmp + ":" + tmp + ":rw",
+                        image, "cat")
+                .stdout(out).stderr(err).join();
+        if (status != 0) {
+            throw new RuntimeException("Failed to start docker image");
+        }
+
+        return new String(out.toByteArray(), "UTF-8").replaceAll("[\n\r]", "");
+    }
+
+    private static FilePath.FileCallable<String> GetTmpdir = new FilePath.FileCallable<String>() {
+        @Override
+        public String invoke(File f, VirtualChannel channel) throws IOException, InterruptedException {
+            return System.getProperty("java.io.tmpdir");
+        }
+    };
 }
