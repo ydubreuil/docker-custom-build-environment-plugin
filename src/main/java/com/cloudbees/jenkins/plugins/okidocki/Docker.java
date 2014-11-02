@@ -110,6 +110,9 @@ public class Docker {
         // bind temp directory
         cmdBuilder.add("-v", tmp + ":" + tmp + ":rw");
 
+        // set working directory
+        cmdBuilder.add("-w", workspace.getRemote());
+
         // configure environment
         for (Map.Entry<String, String> e : environment.entrySet()) {
             cmdBuilder.addMasked("-e");
